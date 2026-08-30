@@ -8,6 +8,8 @@ import {
   collection,
   getDocs,
   addDoc,
+  getDoc,
+  doc,
 } from "firebase/firestore";
 
 import { db } from "../firebase";
@@ -25,6 +27,12 @@ export default function Home() {
   const [direccionCliente, setDireccionCliente] = useState("");
   const [enviandoPedido, setEnviandoPedido] = useState(false);
   const [pedidoExitoso, setPedidoExitoso] = useState(null); // guarda el link de WhatsApp mientras se muestra el modal
+  const [productoDetalle, setProductoDetalle] = useState(null); // producto abierto en el modal ampliado
+  const [cantidadModal, setCantidadModal] = useState(1); // cantidad seleccionada dentro del modal
+  const [zoomActivo, setZoomActivo] = useState(false); // imagen del producto en pantalla completa
+  const [posicionLupa, setPosicionLupa] = useState({ x: 50, y: 50 }); // posición del cursor sobre la imagen (%)
+  const [lupaActiva, setLupaActiva] = useState(false); // si el cursor está sobre la imagen ampliada
+  const [masComprados, setMasComprados] = useState([]); // ids de los 3 productos con más ventas
 
   // NOTIFICACIONES ESTILIZADAS (reemplaza alert())
   const [toast, setToast] = useState(null); // { mensaje, tipo: "error" | "exito" }
@@ -57,12 +65,47 @@ export default function Home() {
 
   useEffect(() => {
     obtenerProductos();
+
+    // Trae el top 3 de más comprados (calculado y guardado por el Admin)
+    const obtenerDestacados = async () => {
+      try {
+        const snap = await getDoc(doc(db, "config", "destacados"));
+        if (snap.exists()) {
+          setMasComprados(snap.data().masComprados || []);
+        }
+      } catch (error) {
+        console.log(error);
+      }
+    };
+    obtenerDestacados();
   }, []);
 
-  // AGREGAR CARRITO
-  const agregarCarrito = (producto) => {
-    setCarrito([...carrito, producto]);
+  // AGREGAR CARRITO (si el producto ya está en el carrito, suma la cantidad en vez de duplicarlo)
+  const agregarCarrito = (producto, cantidad = 1) => {
+    setCarrito((prev) => {
+      const indexExistente = prev.findIndex((item) => item.id === producto.id);
+      if (indexExistente !== -1) {
+        const nuevo = [...prev];
+        nuevo[indexExistente] = {
+          ...nuevo[indexExistente],
+          cantidad: (nuevo[indexExistente].cantidad || 1) + cantidad,
+        };
+        return nuevo;
+      }
+      return [...prev, { ...producto, cantidad }];
+    });
     setCarritoAbierto(true);
+  };
+
+  // CAMBIAR CANTIDAD DE UN PRODUCTO YA EN EL CARRITO
+  const cambiarCantidadCarrito = (index, delta) => {
+    setCarrito((prev) => {
+      const nuevaCantidad = (prev[index].cantidad || 1) + delta;
+      if (nuevaCantidad < 1) return prev; // usa "Remover" para quitarlo del todo
+      const nuevo = [...prev];
+      nuevo[index] = { ...nuevo[index], cantidad: nuevaCantidad };
+      return nuevo;
+    });
   };
 
   // ELIMINAR PRODUCTO
@@ -72,11 +115,35 @@ export default function Home() {
     setCarrito(nuevoCarrito);
   };
 
-  // TOTAL
+  // TOTAL (precio × cantidad de cada producto)
   const totalCarrito = carrito.reduce(
-    (acc, item) => acc + Number(item.precio),
+    (acc, item) => acc + Number(item.precio) * (item.cantidad || 1),
     0
   );
+
+  // ¿EL PRODUCTO SE AGREGÓ EN LOS ÚLTIMOS 14 DÍAS?
+  const esProductoNuevo = (producto) => {
+    if (!producto.fechaCreacion) return false;
+    const fecha = producto.fechaCreacion?.toDate
+      ? producto.fechaCreacion.toDate()
+      : new Date(producto.fechaCreacion);
+    const diasTranscurridos = (Date.now() - fecha.getTime()) / (1000 * 60 * 60 * 24);
+    return diasTranscurridos <= 14;
+  };
+
+  // DECIDE QUÉ ETIQUETA MOSTRAR EN LA TARJETA (una sola, por prioridad)
+  const obtenerEtiqueta = (producto) => {
+    if (producto.recomendado) {
+      return { texto: "Recomendado", color: "bg-[#DFADAD]" };
+    }
+    if (masComprados.includes(producto.id)) {
+      return { texto: "Lo más comprado", color: "bg-amber-500" };
+    }
+    if (esProductoNuevo(producto)) {
+      return { texto: "Nuevo", color: "bg-emerald-500" };
+    }
+    return null;
+  };
 
   const finalizarPedido = async () => {
     if (enviandoPedido) return;
@@ -155,7 +222,11 @@ export default function Home() {
       await addDoc(collection(db, "ordenes"), nuevaOrden);
 
       const productosTexto = carrito
-        .map((producto) => `• ${producto.nombre} - Q${producto.precio}`)
+        .map((producto) => {
+          const cantidad = producto.cantidad || 1;
+          const subtotal = Number(producto.precio) * cantidad;
+          return `• ${producto.nombre} x${cantidad} - Q${subtotal}`;
+        })
         .join("%0A");
 
       const mensaje = `Hola, soy ${nombreLimpio} y quiero realizar este pedido:%0A%0A${productosTexto}%0A%0ATotal: Q${totalCarrito}%0A%0ADirección de entrega: ${direccionLimpia}`;
@@ -352,7 +423,7 @@ export default function Home() {
               </div>
 
               <div className="flex items-center gap-4 text-xs uppercase tracking-[0.1em] text-[#9A9A9A]">
-                <span>Sanarate, Guatemala</span>
+                <span>Sanarate, El Progreso, Guatemala</span>
                 <span className="h-1 w-1 shrink-0 rounded-full bg-[#DFADAD]" />
                 <span>Envíos nacionales</span>
               </div>
@@ -468,29 +539,47 @@ export default function Home() {
                   className="group flex w-full flex-col sm:w-[calc(50%-24px)] lg:w-[calc(33.333%-32px)]"
                 >
                   <div className="relative overflow-hidden rounded-[20px] bg-white border border-black/[0.05] shadow-sm transition-shadow duration-300 group-hover:shadow-lg group-hover:shadow-[#545454]/5">
-                    <div className="aspect-square overflow-hidden rounded-[20px]">
+                    {obtenerEtiqueta(producto) && (
+                      <span
+                        className={`absolute top-3 left-3 z-10 rounded-full px-3.5 py-1.5 text-[10px] uppercase tracking-widest font-semibold text-white shadow-sm ${obtenerEtiqueta(producto).color}`}
+                      >
+                        {obtenerEtiqueta(producto).texto}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProductoDetalle(producto);
+                        setCantidadModal(1);
+                      }}
+                      className="block aspect-square w-full cursor-zoom-in overflow-hidden rounded-[20px]"
+                      aria-label={`Ver detalles de ${producto.nombre}`}
+                    >
                       <img
                         src={producto.imagen}
                         alt={producto.nombre}
                         className="h-full w-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
                       />
-                    </div>
+                    </button>
                   </div>
-                  <div className="mt-7 flex flex-col items-center text-center">
-                    <h3 className="font-serif text-2xl font-light text-[#545454]">
+                  <div className="mt-7 flex flex-1 flex-col items-center text-center">
+                    <h3 className="font-serif text-2xl font-light text-[#545454] line-clamp-2 min-h-[3.6rem] flex items-center">
                       {producto.nombre}
                     </h3>
-                    <p className="mt-3 text-sm font-light leading-relaxed text-[#9A9A9A] line-clamp-2 max-w-[260px]">
+                    <p className="mt-3 text-sm font-light leading-relaxed text-[#9A9A9A] line-clamp-2 min-h-[2.6rem] max-w-[260px]">
                       {producto.descripcion}
                     </p>
-                    <div className="mt-2 font-sans text-2xl font-semibold text-[#DFADAD] tracking-wide"> Q{producto.precio}
-</div>
-                    <button
-                      onClick={() => agregarCarrito(producto)}
-                      className="mt-6 rounded-none bg-[#545454] px-9 py-3.5 text-sm uppercase tracking-widest font-medium text-white shadow-md shadow-[#545454]/20 transition-all duration-300 hover:bg-[#DFADAD] hover:shadow-lg hover:shadow-[#DFADAD]/30 hover:-translate-y-0.5"
-                    >
-                      Comprar
-                    </button>
+                    <div className="mt-auto pt-2 w-full flex flex-col items-center">
+                      <div className="font-sans text-2xl font-semibold text-[#DFADAD] tracking-wide">
+                        Q{producto.precio}
+                      </div>
+                      <button
+                        onClick={() => agregarCarrito(producto, 1)}
+                        className="mt-6 rounded-none bg-[#545454] px-9 py-3.5 text-sm uppercase tracking-widest font-medium text-white shadow-md shadow-[#545454]/20 transition-all duration-300 hover:bg-[#DFADAD] hover:shadow-lg hover:shadow-[#DFADAD]/30 hover:-translate-y-0.5"
+                      >
+                        Comprar
+                      </button>
+                    </div>
                   </div>
                 </motion.div>
               ))
@@ -592,9 +681,32 @@ export default function Home() {
                           <div className="flex flex-1 flex-col justify-between">
                             <div>
                               <h4 className="text-lg font-medium tracking-wide text-[#545454]">{producto.nombre}</h4>
-                              <p className="mt-1.5 text-lg font-medium tracking-wider text-[#DFADAD]">Q {producto.precio}</p>
+                              <p className="mt-1.5 text-lg font-medium tracking-wider text-[#DFADAD]">
+                                Q {Number(producto.precio) * (producto.cantidad || 1)}
+                              </p>
                             </div>
-                            <button onClick={() => eliminarProducto(index)} className="self-start text-xs uppercase tracking-widest text-red-400 transition-colors duration-300 hover:text-red-600 hover:underline">Remover</button>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3 rounded-full border border-black/10 px-1 py-1">
+                                <button
+                                  onClick={() => cambiarCantidadCarrito(index, -1)}
+                                  className="flex h-7 w-7 items-center justify-center rounded-full text-[#545454] transition-colors duration-300 hover:bg-[#F7EEE6]"
+                                  aria-label="Restar unidad"
+                                >
+                                  −
+                                </button>
+                                <span className="min-w-[1.5rem] text-center text-sm font-medium text-[#545454]">
+                                  {producto.cantidad || 1}
+                                </span>
+                                <button
+                                  onClick={() => cambiarCantidadCarrito(index, 1)}
+                                  className="flex h-7 w-7 items-center justify-center rounded-full text-[#545454] transition-colors duration-300 hover:bg-[#F7EEE6]"
+                                  aria-label="Sumar unidad"
+                                >
+                                  +
+                                </button>
+                              </div>
+                              <button onClick={() => eliminarProducto(index)} className="text-xs uppercase tracking-widest text-red-400 transition-colors duration-300 hover:text-red-600 hover:underline">Remover</button>
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -670,7 +782,7 @@ export default function Home() {
               Regalos que cuentan historias. Creamos detalles únicos y personalizados para celebrar a quienes más quieres.
             </p>
             <div className="flex flex-col gap-4 text-lg font-light text-white/50">
-              <p>Sanarate, Guatemala · Envíos nacionales</p>
+              <p>Sanarate, El Progreso, Guatemala · Envíos nacionales</p>
             </div>
           </div>
 
@@ -743,6 +855,190 @@ export default function Home() {
           </a>
         </div>
       </div>
+
+      {/* MODAL DE PRODUCTO AMPLIADO */}
+      <AnimatePresence>
+        {productoDetalle && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                setProductoDetalle(null);
+                setZoomActivo(false);
+              }}
+              className="fixed inset-0 z-[1500] bg-black/50 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, x: "-50%", y: "-50%" }}
+              animate={{ opacity: 1, scale: 1, x: "-50%", y: "-50%" }}
+              exit={{ opacity: 0, scale: 0.95, x: "-50%", y: "-50%" }}
+              transition={{ type: "spring", stiffness: 300, damping: 28 }}
+              className="fixed left-1/2 top-1/2 z-[1501] w-[95%] max-w-5xl max-h-[92vh] overflow-y-auto bg-white shadow-2xl grid gap-0 sm:grid-cols-2"
+            >
+              <button
+                onClick={() => {
+                  setProductoDetalle(null);
+                  setZoomActivo(false);
+                }}
+                className="absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-lg text-[#545454] shadow-md transition-colors duration-300 hover:bg-white"
+                aria-label="Cerrar"
+              >
+                ✕
+              </button>
+
+              <div className="relative aspect-square sm:aspect-auto sm:h-full sm:min-h-[520px] overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setZoomActivo(true)}
+                  className="group block h-full w-full cursor-zoom-in"
+                  aria-label="Ver imagen en pantalla completa"
+                >
+                  <img
+                    src={productoDetalle.imagen}
+                    alt={productoDetalle.nombre}
+                    className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                  />
+                  <span className="absolute bottom-4 right-4 flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-[#545454] shadow-md opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="M21 21l-4.3-4.3M11 8v6M8 11h6" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                </button>
+                {obtenerEtiqueta(productoDetalle) && (
+                  <span
+                    className={`absolute top-4 left-4 rounded-full px-3.5 py-1.5 text-[10px] uppercase tracking-widest font-semibold text-white shadow-sm ${obtenerEtiqueta(productoDetalle).color}`}
+                  >
+                    {obtenerEtiqueta(productoDetalle).texto}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-col p-8 sm:p-10">
+                <h3 className="font-serif text-2xl font-light text-[#545454] sm:text-3xl">
+                  {productoDetalle.nombre}
+                </h3>
+                <p className="mt-2 font-sans text-xl font-semibold text-[#DFADAD] tracking-wide">
+                  Q{productoDetalle.precio}
+                </p>
+
+                <p className="mt-5 text-sm font-light leading-relaxed text-[#6B6B6B]">
+                  {productoDetalle.descripcion}
+                </p>
+
+                {productoDetalle.contenidoDetallado && (
+                  <div className="mt-5">
+                    <h4 className="text-xs uppercase tracking-widest text-[#9A9A9A] mb-2">
+                      Qué incluye
+                    </h4>
+                    <p className="text-sm font-light leading-relaxed text-[#6B6B6B] whitespace-pre-line">
+                      {productoDetalle.contenidoDetallado}
+                    </p>
+                  </div>
+                )}
+
+                <div className="mt-auto pt-8">
+                  <p className="mb-3 text-xs uppercase tracking-widest text-[#9A9A9A]">
+                    Cantidad
+                  </p>
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="flex items-center gap-4 rounded-full border border-black/10 px-2 py-2">
+                      <button
+                        onClick={() => setCantidadModal((c) => Math.max(1, c - 1))}
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[#545454] transition-colors duration-300 hover:bg-[#F7EEE6]"
+                        aria-label="Restar unidad"
+                      >
+                        −
+                      </button>
+                      <span className="min-w-[1.5rem] text-center text-base font-medium text-[#545454]">
+                        {cantidadModal}
+                      </span>
+                      <button
+                        onClick={() => setCantidadModal((c) => c + 1)}
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[#545454] transition-colors duration-300 hover:bg-[#F7EEE6]"
+                        aria-label="Sumar unidad"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      agregarCarrito(productoDetalle, cantidadModal);
+                      setProductoDetalle(null);
+                      setZoomActivo(false);
+                    }}
+                    className="w-full rounded-none bg-[#545454] py-4 text-sm uppercase tracking-widest font-medium text-white shadow-lg shadow-[#545454]/25 transition-all duration-300 hover:bg-[#DFADAD] hover:shadow-xl hover:shadow-[#DFADAD]/35"
+                  >
+                    Agregar {cantidadModal} al carrito
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* ZOOM DE IMAGEN EN PANTALLA COMPLETA */}
+      <AnimatePresence>
+        {zoomActivo && productoDetalle && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => {
+              setZoomActivo(false);
+              setLupaActiva(false);
+            }}
+            className="fixed inset-0 z-[1600] flex items-center justify-center bg-black/90 p-4 cursor-zoom-out"
+          >
+            <button
+              onClick={() => {
+                setZoomActivo(false);
+                setLupaActiva(false);
+              }}
+              className="absolute right-5 top-5 flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-2xl text-white transition-colors duration-300 hover:bg-white/20"
+              aria-label="Cerrar zoom"
+            >
+              ✕
+            </button>
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 260, damping: 24 }}
+              onClick={(e) => e.stopPropagation()}
+              className="relative max-h-full max-w-full overflow-hidden"
+            >
+              <img
+                src={productoDetalle.imagen}
+                alt={productoDetalle.nombre}
+                onMouseMove={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = ((e.clientX - rect.left) / rect.width) * 100;
+                  const y = ((e.clientY - rect.top) / rect.height) * 100;
+                  setPosicionLupa({ x, y });
+                }}
+                onMouseEnter={() => setLupaActiva(true)}
+                onMouseLeave={() => setLupaActiva(false)}
+                className="max-h-[92vh] max-w-full object-contain cursor-zoom-in transition-transform duration-100 ease-out hidden sm:block"
+                style={{
+                  transformOrigin: `${posicionLupa.x}% ${posicionLupa.y}%`,
+                  transform: lupaActiva ? "scale(2.2)" : "scale(1)",
+                }}
+              />
+              {/* En móvil no hay cursor, así que se muestra la imagen normal sin la lupa */}
+              <img
+                src={productoDetalle.imagen}
+                alt={productoDetalle.nombre}
+                className="max-h-[92vh] max-w-full object-contain sm:hidden"
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* MODAL DE PEDIDO EXITOSO */}
       <AnimatePresence>

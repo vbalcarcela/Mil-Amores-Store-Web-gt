@@ -8,6 +8,8 @@ import {
   doc,
   addDoc,
   updateDoc,
+  serverTimestamp,
+  setDoc,
 } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import { auth, db } from "../firebase";
@@ -46,6 +48,8 @@ export default function Admin() {
   const [precio, setPrecio] = useState("");
   const [imagen, setImagen] = useState("");
   const [descripcion, setDescripcion] = useState("");
+  const [contenidoDetallado, setContenidoDetallado] = useState("");
+  const [recomendado, setRecomendado] = useState(false);
   const [categorias, setCategorias] = useState([]);
 
   // CLOUDINARY
@@ -91,7 +95,45 @@ export default function Admin() {
         id: doc.id,
         ...doc.data(),
       }));
+
+      // Ordena de la más reciente a la más antigua.
+      // Si alguna orden vieja no tiene el campo "fecha", la manda al final en vez de excluirla.
+      const obtenerMilisegundos = (orden) => {
+        if (!orden.fecha) return 0;
+        const fechaObj = orden.fecha?.toDate ? orden.fecha.toDate() : new Date(orden.fecha);
+        return fechaObj.getTime() || 0;
+      };
+      ordenesFirebase.sort((a, b) => obtenerMilisegundos(b) - obtenerMilisegundos(a));
+
       setOrdenes(ordenesFirebase);
+      actualizarMasComprados(ordenesFirebase);
+    } catch (error) {
+      console.log(error);
+    }
+  };
+
+  // CALCULA LOS 3 PRODUCTOS CON MÁS VENTAS Y LOS GUARDA EN UN DOCUMENTO PÚBLICO
+  // (la tienda no puede leer "ordenes" directamente por privacidad de los clientes,
+  // así que el Admin hace el cálculo y deja el resultado en config/destacados)
+  const actualizarMasComprados = async (listaOrdenes) => {
+    try {
+      const conteo = {};
+      listaOrdenes.forEach((orden) => {
+        if (!Array.isArray(orden.productos)) return;
+        orden.productos.forEach((p) => {
+          if (!p.id) return;
+          conteo[p.id] = (conteo[p.id] || 0) + (p.cantidad || 1);
+        });
+      });
+
+      const top3 = Object.entries(conteo)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([id]) => id);
+
+      if (top3.length > 0) {
+        await setDoc(doc(db, "config", "destacados"), { masComprados: top3 });
+      }
     } catch (error) {
       console.log(error);
     }
@@ -152,13 +194,15 @@ export default function Admin() {
   const generarComprobante = (orden) => {
     const productosFilas = Array.isArray(orden.productos)
       ? orden.productos
-          .map(
-            (p) => `
+          .map((p) => {
+            const cantidad = p.cantidad || 1;
+            const subtotal = Number(p.precio) * cantidad;
+            return `
             <tr>
-              <td>${p.nombre}</td>
-              <td style="text-align:right">Q${p.precio}</td>
-            </tr>`
-          )
+              <td>${p.nombre}${cantidad > 1 ? ` (x${cantidad})` : ""}</td>
+              <td style="text-align:right">Q${subtotal}</td>
+            </tr>`;
+          })
           .join("")
       : "";
 
@@ -195,7 +239,7 @@ export default function Admin() {
       <body>
         <div class="encabezado">
           <img src="${logo}" alt="Mil Amores GT" />
-          <p>Sanarate, Guatemala · Envíos nacionales</p>
+          <p>Sanarate, El Progreso, Guatemala · Envíos nacionales</p>
         </div>
         <p class="titulo-comprobante">Comprobante de compra</p>
         <div class="datos">
@@ -305,6 +349,8 @@ export default function Admin() {
     setPrecio("");
     setImagen("");
     setDescripcion("");
+    setContenidoDetallado("");
+    setRecomendado(false);
     setCategorias([]);
     setEditandoId(null);
   };
@@ -323,6 +369,8 @@ export default function Admin() {
         precio,
         imagen,
         descripcion,
+        contenidoDetallado: contenidoDetallado.trim(),
+        recomendado,
         categorias,
       };
 
@@ -331,18 +379,22 @@ export default function Admin() {
         setProductos(
           productos.map((producto) =>
             producto.id === editandoId
-              ? { id: editandoId, ...productoData }
+              ? { ...producto, ...productoData }
               : producto
           )
         );
         mostrarToast("Producto actualizado", "exito");
       } else {
-        const docRef = await addDoc(collection(db, "productos"), productoData);
+        const docRef = await addDoc(collection(db, "productos"), {
+          ...productoData,
+          fechaCreacion: serverTimestamp(),
+        });
         setProductos([
           ...productos,
           {
             id: docRef.id,
             ...productoData,
+            fechaCreacion: new Date(),
           },
         ]);
         mostrarToast("Producto agregado", "exito");
@@ -360,6 +412,8 @@ export default function Admin() {
     setPrecio(producto.precio);
     setImagen(producto.imagen);
     setDescripcion(producto.descripcion);
+    setContenidoDetallado(producto.contenidoDetallado || "");
+    setRecomendado(!!producto.recomendado);
     // Compatibilidad: productos viejos tienen "categoria" (texto), los nuevos "categorias" (arreglo)
     setCategorias(
       Array.isArray(producto.categorias)
@@ -571,13 +625,20 @@ export default function Admin() {
             ) : (
               <div className="flex flex-col divide-y divide-black/[0.06]">
                 {ordenes.slice(0, 5).map((orden) => (
-                  <div key={orden.id} className="flex items-center justify-between gap-3 py-3 text-sm">
-                    <span className="text-[#545454]">{orden.nombre || "Cliente sin nombre"}</span>
-                    <span className="text-[#9A9A9A]">
+                  <div
+                    key={orden.id}
+                    className="grid grid-cols-[1.4fr_0.9fr_0.7fr_0.9fr_36px] items-center gap-3 py-3 text-sm"
+                  >
+                    <span className="truncate text-[#545454]">
+                      {orden.nombre || "Cliente sin nombre"}
+                    </span>
+                    <span className="truncate text-[#9A9A9A]">
                       {Array.isArray(orden.productos) ? orden.productos.length : 0} producto(s)
                     </span>
                     <span className="font-medium text-[#DFADAD]">Q{orden.total}</span>
-                    <span className="text-xs uppercase tracking-widest text-[#9A9A9A]">{orden.estado}</span>
+                    <span className="truncate text-xs uppercase tracking-widest text-[#9A9A9A]">
+                      {orden.estado}
+                    </span>
                     <button
                       onClick={() => generarComprobante(orden)}
                       aria-label="Descargar comprobante"
@@ -674,6 +735,60 @@ export default function Admin() {
 
               <div className="md:col-span-2 flex flex-col gap-1.5">
                 <label className="text-xs uppercase tracking-widest text-[#9A9A9A]">
+                  Qué incluye (opcional)
+                </label>
+                <p className="text-[11px] text-[#9A9A9A] -mt-0.5">
+                  Se muestra al cliente cuando abre la imagen del producto en grande. Ej: 1 peluche, 1 ramo de rosas, 1 chocolate.
+                </p>
+                <textarea
+                  placeholder="1 peluche mediano&#10;1 ramo de rosas&#10;1 caja de chocolates"
+                  value={contenidoDetallado}
+                  onChange={(e) => setContenidoDetallado(e.target.value)}
+                  className="min-h-[90px] rounded-xl border border-black/10 bg-[#F7EEE6] px-4 py-3 text-sm outline-none transition focus:border-[#DFADAD] focus:bg-white resize-y"
+                />
+              </div>
+
+              <div className="md:col-span-2 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setRecomendado((r) => !r)}
+                  role="switch"
+                  aria-checked={recomendado}
+                  style={{
+                    position: "relative",
+                    width: 44,
+                    height: 24,
+                    minWidth: 44,
+                    borderRadius: 9999,
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                    backgroundColor: recomendado ? "#DFADAD" : "rgba(0,0,0,0.15)",
+                    transition: "background-color 0.25s ease",
+                  }}
+                >
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: 2,
+                      left: recomendado ? 22 : 2,
+                      width: 20,
+                      height: 20,
+                      borderRadius: "50%",
+                      backgroundColor: "#fff",
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+                      transition: "left 0.25s ease",
+                    }}
+                  />
+                </button>
+                <div>
+                  <p className="text-sm font-medium text-[#545454]">Marcar como Recomendado</p>
+                  <p className="text-xs text-[#9A9A9A]">Se muestra como etiqueta destacada en la tienda</p>
+                </div>
+              </div>
+
+              <div className="md:col-span-2 flex flex-col gap-1.5">
+                <label className="text-xs uppercase tracking-widest text-[#9A9A9A]">
                   Categorías (puedes elegir varias)
                 </label>
                 <div className="flex flex-wrap gap-2">
@@ -735,6 +850,12 @@ export default function Admin() {
           alt={producto.nombre}
           className="mb-4 h-48 w-full rounded-xl object-cover"
         />
+
+        {producto.recomendado && (
+          <span className="mb-2 inline-block rounded-full bg-[#DFADAD]/15 px-3 py-1 text-[10px] uppercase tracking-widest font-semibold text-[#DFADAD]">
+            Recomendado
+          </span>
+        )}
 
         <h4 className="font-serif text-lg font-normal text-[#545454]">
           {producto.nombre}
@@ -846,13 +967,18 @@ export default function Admin() {
               {orden.telefono || "—"}
             </td>
 
-            <td className="p-4 text-sm text-[#6B6B6B] max-w-[220px]">
+            <td
+              className="p-4 text-sm text-[#6B6B6B] max-w-[220px] break-words line-clamp-2"
+              title={orden.direccion || ""}
+            >
               {orden.direccion || "—"}
             </td>
 
             <td className="p-4 text-sm text-[#6B6B6B]">
               {Array.isArray(orden.productos)
-                ? orden.productos.map((p) => p.nombre).join(", ")
+                ? orden.productos
+                    .map((p) => `${p.nombre}${p.cantidad > 1 ? ` x${p.cantidad}` : ""}`)
+                    .join(", ")
                 : "—"}
             </td>
 
