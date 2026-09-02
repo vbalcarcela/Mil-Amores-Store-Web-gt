@@ -792,14 +792,17 @@ export default function Admin() {
                   Categorías (puedes elegir varias)
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {["flores", "cajas de regalo", "joyas", "chocolates", "extras", "arreglos de temporada"].map((cat) => {
+                  {["flores", "ramos", "cajas de regalo", "joyas", "chocolates", "extras", "arreglos de temporada", "dama", "caballero"].map((cat) => {
                     const nombresCategoria = {
                       "flores": "Flores",
+                      "ramos": "Ramos",
                       "cajas de regalo": "Cajas de Regalo",
                       "joyas": "Joyas",
                       "chocolates": "Chocolates",
                       "extras": "Extras",
                       "arreglos de temporada": "Arreglos de Temporada",
+                      "dama": "Dama",
+                      "caballero": "Caballero",
                     };
                     const seleccionada = categorias.includes(cat);
                     return (

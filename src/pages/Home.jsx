@@ -1,7 +1,7 @@
 import heroImage from "../assets/hero.png";
 import logo from "../assets/logo.png";
 import logoDark from "../assets/logo-dark.png";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 import {
@@ -18,6 +18,20 @@ export default function Home() {
   const [productos, setProductos] = useState([]);
   const [carrito, setCarrito] = useState([]);
   const [busqueda, setBusqueda] = useState("");
+  const [ordenPrecio, setOrdenPrecio] = useState("relevancia"); // "relevancia" | "menor" | "mayor"
+  const [filtroAbierto, setFiltroAbierto] = useState(false);
+  const filtroRef = useRef(null);
+
+  // Cierra el panel de filtro si el usuario hace clic afuera
+  useEffect(() => {
+    const cerrarSiClickAfuera = (e) => {
+      if (filtroRef.current && !filtroRef.current.contains(e.target)) {
+        setFiltroAbierto(false);
+      }
+    };
+    document.addEventListener("mousedown", cerrarSiClickAfuera);
+    return () => document.removeEventListener("mousedown", cerrarSiClickAfuera);
+  }, []);
   const [categoria, setCategoria] = useState("todos");
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -269,6 +283,12 @@ export default function Home() {
     return coincideBusqueda && coincideCategoria;
   });
 
+  const productosOrdenados = [...productosFiltrados].sort((a, b) => {
+    if (ordenPrecio === "menor") return Number(a.precio) - Number(b.precio);
+    if (ordenPrecio === "mayor") return Number(b.precio) - Number(a.precio);
+    return 0; // relevancia: mantiene el orden original
+  });
+
   return (
     <div className="w-full min-h-screen bg-[#F7EEE6] text-[#545454] font-sans antialiased overflow-x-clip relative flex flex-col items-center">
 
@@ -463,20 +483,88 @@ export default function Home() {
 
           {/* FILTROS */}
           <div className="w-full mt-12 flex flex-col items-center gap-11" style={{ marginBottom: "3rem" }}>
-            <input
-              type="text"
-              placeholder="Buscar Producto"
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              className="w-[560px] max-w-full border-b border-black/15 bg-transparent pb-4 text-center text-lg font-light tracking-wide text-[#545454] placeholder:text-[#B0B0B0] outline-none transition-colors duration-300 focus:border-[#DFADAD]"
-            />
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full">
+              <input
+                type="text"
+                placeholder="Buscar Producto"
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                className="w-[480px] max-w-full border-b border-black/15 bg-transparent pb-4 text-center text-lg font-light tracking-wide text-[#545454] placeholder:text-[#B0B0B0] outline-none transition-colors duration-300 focus:border-[#DFADAD]"
+              />
+
+              <div className="relative shrink-0" ref={filtroRef}>
+                <button
+                  type="button"
+                  onClick={() => setFiltroAbierto((v) => !v)}
+                  className={`flex items-center gap-2 rounded-full border px-6 py-3 text-xs uppercase tracking-widest font-medium transition-colors duration-300 ${
+                    ordenPrecio !== "relevancia"
+                      ? "border-[#DFADAD] text-[#DFADAD] bg-[#DFADAD]/[0.07]"
+                      : "border-black/10 text-[#545454] hover:border-[#DFADAD] hover:text-[#DFADAD]"
+                  }`}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 6h16M7 12h10M10 18h4" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  Filtros
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    className={`transition-transform duration-300 ${filtroAbierto ? "rotate-180" : ""}`}
+                  >
+                    <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+
+                <AnimatePresence>
+                  {filtroAbierto && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.18 }}
+                      className="absolute right-0 top-full z-30 mt-3 w-64 rounded-2xl border border-black/[0.06] bg-white p-2 shadow-xl shadow-black/[0.08]"
+                    >
+                      <p className="px-3 pb-1.5 pt-2 text-[10px] uppercase tracking-widest text-[#9A9A9A]">
+                        Ordenar por precio
+                      </p>
+                      {[
+                        { valor: "relevancia", texto: "Relevancia" },
+                        { valor: "menor", texto: "Menor a mayor precio" },
+                        { valor: "mayor", texto: "Mayor a menor precio" },
+                      ].map((op) => (
+                        <button
+                          key={op.valor}
+                          type="button"
+                          onClick={() => {
+                            setOrdenPrecio(op.valor);
+                            setFiltroAbierto(false);
+                          }}
+                          className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition-colors duration-200 ${
+                            ordenPrecio === op.valor
+                              ? "bg-[#F7EEE6] font-medium text-[#545454]"
+                              : "text-[#6B6B6B] hover:bg-[#F7EEE6]/60"
+                          }`}
+                        >
+                          {op.texto}
+                          {ordenPrecio === op.valor && <span className="text-[#DFADAD]">✓</span>}
+                        </button>
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>
 
             <div className="flex flex-wrap justify-center gap-4">
-              {["todos", "flores", "cajas de regalo", "joyas", "chocolates", "extras", "arreglos de temporada"].map((cat) => (
+              {["todos", "flores", "ramos", "cajas de regalo", "joyas", "chocolates", "extras", "arreglos de temporada", "dama", "caballero"].map((cat) => (
                 <button
                   key={cat}
                   onClick={() => setCategoria(cat)}
-                  className={`relative rounded-full text-sm uppercase tracking-widest font-medium py-3.5 px-8 transition-colors duration-300 ${
+                  className={`relative overflow-hidden rounded-full text-sm uppercase tracking-widest font-medium py-3.5 px-8 transition-colors duration-300 ${
                     categoria === cat
                       ? "text-white"
                       : "text-[#545454]/60 border border-black/10 hover:border-[#DFADAD] hover:text-[#DFADAD]"
@@ -486,10 +574,10 @@ export default function Home() {
                     <motion.span
                       layoutId="filtroActivo"
                       transition={{ type: "spring", stiffness: 350, damping: 30 }}
-                      className="absolute inset-0 -z-10 rounded-full bg-[#DFADAD]"
+                      className="absolute inset-0 rounded-full bg-[#DFADAD]"
                     />
                   )}
-                  {cat}
+                  <span className="relative z-10">{cat}</span>
                 </button>
               ))}
             </div>
@@ -519,7 +607,7 @@ export default function Home() {
                   Reintentar
                 </button>
               </div>
-            ) : productosFiltrados.length === 0 ? (
+            ) : productosOrdenados.length === 0 ? (
               <div className="flex flex-col items-center gap-2 py-16 text-center">
                 <p className="font-serif text-lg italic text-[#6B6B6B]">
                   No encontramos piezas con esos filtros
@@ -529,7 +617,7 @@ export default function Home() {
                 </p>
               </div>
             ) : (
-              productosFiltrados.map((producto, index) => (
+              productosOrdenados.map((producto, index) => (
                 <motion.div
                   key={producto.id}
                   initial={{ opacity: 0, y: 24 }}
